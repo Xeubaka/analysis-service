@@ -1,0 +1,42 @@
+# Runs on every push/PR to this repo. Scoped to analysis-service only — this
+# repo IS the service now (see the main chess-platform repo's CLAUDE.md for
+# the full multi-repo layout). End-to-end testing across all services lives
+# in the main repo only, since it needs every service running together.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile check
+        run: python -m py_compile app.py
+
+  dependency-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder for dependency vulnerability scan
+        run: echo "Wire in Snyk, Trivy, or 'pip-audit' here"
+
+  build-image:
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (no push on PRs)
+        run: docker build -t chess-platform/analysis-service:ci .
