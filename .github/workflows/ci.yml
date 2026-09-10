@@ -21,10 +21,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Compile check
         run: python -m py_compile app.py
+
+      - name: Run unit tests
+        run: pytest -v
 
   dependency-scan:
     runs-on: ubuntu-latest
