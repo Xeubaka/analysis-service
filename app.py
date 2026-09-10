@@ -24,10 +24,18 @@ import os
 import threading
 
 import redis
-from flask import Flask, jsonify
+import requests
+from flask import Flask, jsonify, request
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379")
 PORT = int(os.environ.get("PORT", 3004))
+
+# Set only when game-service is the Cloudflare Worker/Durable Object version
+# instead of the docker-compose one — a DO can't hold a persistent Redis
+# SUBSCRIBE across hibernation, so it calls POST /internal/moves here instead
+# of publishing to Redis, and expects the result pushed back over HTTP too.
+WORKER_CALLBACK_URL = os.environ.get("WORKER_CALLBACK_URL", "")
+ANALYSIS_SHARED_SECRET = os.environ.get("ANALYSIS_SHARED_SECRET", "")
 
 PIECE_VALUES = {"p": 1, "n": 3, "b": 3, "r": 5, "q": 9, "k": 0}
 
@@ -58,6 +66,33 @@ def estimate_win_probability(fen: str) -> dict:
     }
 
 
+def process_move(data: dict) -> dict:
+    """Shared by both the Redis listener and the /internal/moves HTTP route
+    so a docker-compose game-service (Redis pub/sub) and a Cloudflare
+    Worker/DO game-service (HTTP) get identical analysis behavior."""
+    room_id = data["roomId"]
+    result = estimate_win_probability(data["fen"])
+    result["roomId"] = room_id
+    r.set(f"analysis:latest:{room_id}", json.dumps(result))
+    r.publish(f"analysis:{room_id}", json.dumps(result))
+    notify_worker_callback(room_id, result)
+    return result
+
+
+def notify_worker_callback(room_id: str, result: dict) -> None:
+    if not WORKER_CALLBACK_URL:
+        return
+    try:
+        requests.post(
+            f"{WORKER_CALLBACK_URL}/internal/analysis-callback/{room_id}",
+            json=result,
+            headers={"x-internal-secret": ANALYSIS_SHARED_SECRET},
+            timeout=2,
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort, never blocks the Redis path
+        print(f"analysis-service: worker callback failed: {exc}")
+
+
 def listen_for_moves():
     pubsub = r.pubsub()
     pubsub.psubscribe("moves:*")
@@ -66,12 +101,7 @@ def listen_for_moves():
         if message["type"] != "pmessage":
             continue
         try:
-            data = json.loads(message["data"])
-            room_id = data["roomId"]
-            result = estimate_win_probability(data["fen"])
-            result["roomId"] = room_id
-            r.set(f"analysis:latest:{room_id}", json.dumps(result))
-            r.publish(f"analysis:{room_id}", json.dumps(result))
+            process_move(json.loads(message["data"]))
         except Exception as exc:  # noqa: BLE001 - log and keep the loop alive
             print(f"analysis-service error processing message: {exc}")
 
@@ -87,6 +117,17 @@ def latest_analysis(room_id):
     if not cached:
         return jsonify({"error": "no analysis yet"}), 404
     return jsonify(json.loads(cached))
+
+
+@app.post("/internal/moves")
+def internal_moves():
+    if request.headers.get("x-internal-secret") != ANALYSIS_SHARED_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        result = process_move(request.get_json(force=True))
+        return jsonify(result)
+    except Exception as exc:  # noqa: BLE001 - bad payload from the caller
+        return jsonify({"error": str(exc)}), 400
 
 
 if __name__ == "__main__":
