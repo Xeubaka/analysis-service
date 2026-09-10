@@ -33,8 +33,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Placeholder for dependency vulnerability scan
-        run: echo "Wire in Snyk, Trivy, or 'pip-audit' here"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Audit dependencies (fail on known vulnerabilities)
+        run: pip-audit -r requirements.txt
 
   build-image:
     needs: [test]
